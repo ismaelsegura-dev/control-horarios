@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control de Horarios</title>
+<style>
+  :root{
+    --bg:#08090d; --panel:#11131a; --panel2:#181b24; --border:#262a35;
+    --gold:#C5A059; --green:#1B4B44; --green2:#2a6b60;
+    --text:#e8e8ea; --muted:#8a8f9c; --red:#b04a4a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;font-family:'Inter',system-ui,-apple-system,sans-serif}
+  body{background:var(--bg);color:var(--text);min-height:100vh;padding:16px;max-width:760px;margin:0 auto}
+  h1{font-size:1.15rem;font-weight:600;letter-spacing:.02em}
+  h1 span{color:var(--gold)}
+  header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input[type=date]{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font-size:.9rem}
+  button{cursor:pointer;border:none;border-radius:8px;font-size:.85rem;font-weight:500;padding:8px 12px;transition:opacity .15s}
+  button:hover{opacity:.85}
+  .btn-gold{background:var(--gold);color:#0a0a0a}
+  .btn-ghost{background:var(--panel2);color:var(--text);border:1px solid var(--border)}
+  .btn-green{background:var(--green2);color:#fff}
+  .btn-red{background:transparent;color:var(--red);padding:4px 8px;font-size:1rem;line-height:1}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:14px}
+  .add-row{display:flex;gap:8px}
+  .add-row input{flex:1;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:9px 12px;font-size:.9rem}
+  .row{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:10px;background:var(--panel2);border:1px solid var(--border);margin-bottom:8px;flex-wrap:wrap}
+  .row.inside{border-color:var(--green2);background:rgba(42,107,96,.12)}
+  .name{flex:1;min-width:130px;font-size:.92rem;font-weight:500}
+  .name small{display:block;color:var(--muted);font-weight:400;font-size:.72rem;margin-top:2px}
+  input[type=time]{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:.88rem;width:96px}
+  .hours{font-variant-numeric:tabular-nums;font-size:.85rem;color:var(--gold);min-width:52px;text-align:right;font-weight:600}
+  .empty{color:var(--muted);text-align:center;padding:24px;font-size:.9rem}
+  footer{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:.85rem;color:var(--muted);flex-wrap:wrap;gap:8px}
+  .total{font-size:1rem;color:var(--gold);font-weight:600}
+  @media(max-width:520px){.name{min-width:100%;}}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Control de <span>Horarios</span></h1>
+  <div class="controls">
+    <input type="date" id="datePicker">
+    <button class="btn-ghost" id="btnExport">Exportar CSV</button>
+  </div>
+</header>
+
+<div class="panel">
+  <div class="add-row">
+    <input type="text" id="newWorker" placeholder="Añadir trabajador (ej: Antonio Pérez)" maxlength="60">
+    <button class="btn-gold" id="btnAdd">Añadir</button>
+  </div>
+</div>
+
+<div id="list"><div class="empty">Cargando…</div></div>
+<footer>
+  <span id="count"></span>
+  <span class="total" id="totalHours"></span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ═══ PEGA AQUÍ TUS DATOS DE SUPABASE ═══
+const SUPABASE_URL = 'https://wzyvqkzdzoaxneownoke.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind6eXZxa3pkem9heG5lb3dub2tlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMxMTAwNDUsImV4cCI6MjEwODY4NjA0NX0.zwr5QIYhUPpBvxbuJCB4rpraDsIg95exSE2A5jFCo_Q;
+// ═══════════════════════════════════════
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let workers = [];
+let dayRecords = {};
+const datePicker = document.getElementById('datePicker');
+datePicker.value = new Date().toISOString().slice(0,10);
+datePicker.addEventListener('change', loadDay);
+
+const today = () => datePicker.value;
+const rec = id => dayRecords[id] || {};
+
+function nowHM(){ const d = new Date(); return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); }
+
+function calcH(inV, outV){
+  if(!inV || !outV) return '';
+  const [h1,m1] = inV.split(':').map(Number), [h2,m2] = outV.split(':').map(Number);
+  let mins = (h2*60+m2) - (h1*60+m1);
+  if(mins < 0) mins += 24*60;
+  return (mins/60).toFixed(2).replace('.',',') + ' h';
+}
+
+async function init(){
+  const { data, error } = await sb.from('workers').select('*').order('name');
+  if(error){ showErr('Error de conexión con Supabase: ' + error.message); return; }
+  workers = data || [];
+  await loadDay();
+}
+
+async function loadDay(){
+  document.getElementById('list').innerHTML = '<div class="empty">Cargando…</div>';
+  const { data } = await sb.from('records').select('*').eq('date', today());
+  dayRecords = {};
+  for(const r of (data || [])) dayRecords[r.worker_id] = r;
+  render();
+}
+
+async function punch(id){
+  const r = rec(id);
+  const payload = { date: today(), worker_id: id, in: r.in || null, out: r.out || null };
+  payload.out ? null : (payload.in ? payload.out = nowHM() : payload.in = nowHM());
+  const { error } = await sb.from('records').upsert(payload, { onConflict: 'date,worker_id' });
+  if(!error) await loadDay();
+}
+
+async function setTime(id, field, val){
+  const r = rec(id);
+  const payload = { date: today(), worker_id: id, in: r.in || null, out: r.out || null };
+  payload[field] = val || null;
+  await sb.from('records').upsert(payload, { onConflict: 'date,worker_id' });
+  await loadDay();
+}
+
+async function addWorker(){
+  const inp = document.getElementById('newWorker');
+  const name = inp.value.trim();
+  if(!name) return;
+  await sb.from('workers').insert({ name });
+  inp.value = '';
+  await init();
+}
+
+async function removeWorker(id){
+  if(!confirm('¿Eliminar trabajador? Se conservan sus fichajes históricos.')) return;
+  await sb.from('workers').delete().eq('id', id);
+  await init();
+}
+
+function render(){
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+  if(!workers.length){
+    list.innerHTML = '<div class="empty">Sin trabajadores. Añade el primero arriba.</div>';
+  }
+  let total = 0, fichados = 0;
+  for(const w of workers){
+    const r = rec(w.id);
+    if(r.in) fichados++;
+    const htxt = calcH(r.in, r.out);
+    if(htxt) total += parseFloat(htxt.replace(' h','').replace(',','.'));
+    const row = document.createElement('div');
+    row.className = 'row' + (r.in && !r.out ? ' inside' : '');
+    const sub = r.in && !r.out ? 'DENTRO — entró ' + r.in : '';
+    row.innerHTML = `
+      <div class="name">${escapeHtml(w.name)}${sub ? `<small>● ${sub}</small>` : ''}</div>
+      <input type="time" value="${r.in||''}" title="Entrada" onchange="setTime('${w.id}','in',this.value)">
+      <input type="time" value="${r.out||''}" title="Salida" onchange="setTime('${w.id}','out',this.value)">
+      <span class="hours">${htxt}</span>
+      <button class="${r.in && !r.out ? 'btn-green' : 'btn-gold'}" onclick="punch('${w.id}')">${r.in && !r.out ? 'Salida ahora' : 'Fichar ahora'}</button>
+      <button class="btn-red" onclick="removeWorker('${w.id}')" title="Eliminar">×</button>`;
+    list.appendChild(row);
+  }
+  document.getElementById('count').textContent = `${fichados} de ${workers.length} fichados`;
+  document.getElementById('totalHours').textContent = total ? `Total día: ${total.toFixed(2).replace('.',',')} h` : '';
+}
+
+function escapeHtml(s){ return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function showErr(msg){
+  document.getElementById('list').innerHTML = `<div class="empty">${escapeHtml(msg)}</div>`;
+}
+
+async function exportCSV(){
+  const { data } = await sb.from('records').select('*').order('date').limit(10000);
+  let csv = 'Fecha;Trabajador;Entrada;Salida;Horas\n';
+  for(const r of (data || [])){
+    const w = workers.find(x => x.id === r.worker_id);
+    if(!w) continue;
+    csv += `${r.date};${w.name.replaceAll(';',',')};${r.in||''};${r.out||''};${calcH(r.in,r.out).replace(' h','')}\n`;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'}));
+  a.download = 'horarios.csv'; a.click();
+}
+
+document.getElementById('btnAdd').addEventListener('click', addWorker);
+document.getElementById('newWorker').addEventListener('keydown', e => { if(e.key==='Enter') addWorker(); });
+document.getElementById('btnExport').addEventListener('click', exportCSV);
+init();
+</script>
+</body>
+</html>
